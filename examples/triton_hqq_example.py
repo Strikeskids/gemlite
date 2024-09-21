@@ -1,12 +1,9 @@
 import torch 
 
-def check_valid(x, W, quant_linear, tol=1e-3):
+def check_valid(x, W, quant_linear, tol=3e-3):
     y_ref = torch.matmul(x, W.T)
     y_q   = quant_linear(x)
-    try:
-        assert (y_ref - y_q).abs().mean() < tol
-    except:
-        raise Error('Assertion Failed')
+    assert torch.allclose(y_ref, y_q, atol=tol)
 
 ############################################################################################
 from hqq.core.quantize import HQQLinear, BaseQuantizeConfig
@@ -30,7 +27,7 @@ gemlite_linear = GemLiteLinearTriton(W_nbits, group_size=group_size, in_features
 W_q           = hqq_layer.unpack().view(orig_shape)
 scales        = hqq_layer.meta['scale']
 zeros         = hqq_layer.meta['zero']
-gemlite_linear.pack(W_q, scales, zeros, None);
+gemlite_linear.pack(W_q, scales, zeros, None)
 
 batch_size = 8
 x = torch.randn((batch_size, in_features), dtype=gemlite_linear.compute_dtype, device='cuda:0')/10.

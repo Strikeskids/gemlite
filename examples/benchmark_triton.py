@@ -27,10 +27,7 @@ def eval_time(fct, params):
 def check_valid(x, W, quant_linear, tol=1e-3):
     y_ref = torch.matmul(x, W.T)
     y_q   = quant_linear(x)
-    try:
-        assert (y_ref - y_q).abs().mean() < tol
-    except:
-        raise Error('Assertion Failed')
+    assert (y_ref - y_q).abs().mean() < tol
 
 #################################################################################################################################
 #TorchAO Int8 settings
