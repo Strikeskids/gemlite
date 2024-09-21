@@ -78,9 +78,9 @@ def gemm_A16fWnO16f_int32packing_kernel(
     Based on https://github.com/fpgaminer/GPTQ-triton
     GEMM for C = matmul(A, dequantize(B, scales, zeros))
     A is of shape (M, K): float16 or bfloat16
-    B is of shape (K//8, N): int32 as a packed matrix
+    B is of shape (K//elements_per_sample, N): int32 as a packed matrix
     C is of shape (M, N): float16 or bfloat16 depending on the input A
-    scales and zeros is of shape (group_size, N): float16 or bfloat16
+    scales and zeros is of shape (K // group_size, N): float16 or bfloat16
 
     BLOCK_SIZE_M >=16
     BLOCK_SIZE_K <= group_size

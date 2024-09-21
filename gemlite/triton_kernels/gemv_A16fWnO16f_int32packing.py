@@ -77,9 +77,9 @@ def gemv_A16fWnO16f_int32packing_kernel(
     """
     GEMV for C = matmul(A, dequantize(B, scales, zeros)). This is optimized for M==1
     A is of shape (M, K): float16 or bfloat16
-    B is of shape (K//8, N): int32 as a packed matrix
+    B is of shape (K//elements_per_sample, N): int32 as a packed matrix
     C is of shape (M, N): float16 or bfloat16 depending on the input A
-    scales and zeros is of shape (group_size, N): float16 or bfloat16
+    scales and zeros is of shape (M // group_size, N): float16 or bfloat16
     """    
     pid_m   = tl.program_id(axis=0)
     pid_k   = tl.program_id(axis=1)

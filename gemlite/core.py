@@ -178,6 +178,8 @@ GEMLITE_TRITON_MAPPING = {
     ("BF16", "GEMM"): gemm_A16fWnO16f_int32packing,
 }
 
+def cdiv(a, b):
+    return (a + b - 1) // b
 
 # Triton
 class GemLiteLinearTriton(torch.nn.Module):
@@ -203,7 +205,7 @@ class GemLiteLinearTriton(torch.nn.Module):
         self.out_features = out_features
         self.orig_shape   = (out_features, in_features)
         self.W_nbits      = W_nbits
-        self.group_size   = group_size if group_size != -1 else in_features
+        self.group_size   = group_size if group_size is not None else in_features
         self.unpack_mask  = 2**self.W_nbits - 1
         self.elements_per_sample = 32 // self.W_nbits
         self.signature = (in_features, out_features, W_nbits, group_size)
@@ -230,6 +232,8 @@ class GemLiteLinearTriton(torch.nn.Module):
 
         self.acc_dtype = tl.float16 if (acc_dtype == DType.FP16) else tl.float32
 
+        num_groups = cdiv(self.in_features, self.group_size)
+
         with torch.device("meta"):
             self.register_buffer(
                 "W_q",
@@ -241,16 +245,14 @@ class GemLiteLinearTriton(torch.nn.Module):
             self.register_buffer(
                 "scales",
                 torch.zeros(
-                    int(np.ceil(self.in_features / self.group_size)),
-                    self.out_features,
+                    (num_groups, self.out_features),
                     dtype=self.compute_dtype,
                 ),
             )
             self.register_buffer(
                 "zeros",
                 torch.zeros(
-                    int(np.ceil(self.in_features / self.group_size)),
-                    self.out_features,
+                    (num_groups, self.out_features),
                     dtype=self.compute_dtype,
                 ),
             )
@@ -273,8 +275,9 @@ class GemLiteLinearTriton(torch.nn.Module):
             row += 1
 
         self.W_q    = self.W_q.contiguous()
-        self.scales = scales.reshape((self.out_features, -1)).t().contiguous()
-        self.zeros  = zeros.reshape((self.out_features, -1)).t().contiguous()
+        num_groups  = self.in_features // self.group_size
+        self.scales = scales.reshape((self.out_features, num_groups)).t().contiguous()
+        self.zeros  = zeros.reshape((self.out_features, num_groups)).t().contiguous()
         self.bias   = None if (bias is None) else torch.nn.Parameter(bias.to(device=self.W_q.device, dtype=self.compute_dtype))
         self.device = self.W_q.device
         return self
