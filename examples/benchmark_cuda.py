@@ -118,12 +118,12 @@ for b, K, N  in shapes:
 	w_maxabs_val = 1. 
 
 	x		    = x_maxabs_val*(x / x.abs().max())
-	x_scale_f   = 127. / x_maxabs_val;
-	x_scale_fp8 = torch.tensor(448. / x_maxabs_val, device=W.device);
+	x_scale_f   = 127. / x_maxabs_val
+	x_scale_fp8 = torch.tensor(448. / x_maxabs_val, device=W.device)
 	
 	W		   = w_maxabs_val*(W / W.abs().max())
-	w_scale_f  = 127. / w_maxabs_val;
-	w_scale_f8 = torch.tensor(448. / w_maxabs_val, device=W.device);
+	w_scale_f  = 127. / w_maxabs_val
+	w_scale_f8 = torch.tensor(448. / w_maxabs_val, device=W.device)
 	W_int	   = (W * w_scale_f).to(torch.int8)
 	W_uint	   = (W * w_scale_f + 127).to(torch.uint8)
 	W_fp8	   = (W * w_scale_f8).to(torch.float8_e4m3fn)
@@ -136,7 +136,9 @@ for b, K, N  in shapes:
 	assert (x.float() - (x_int.float() / x_scale_f)).abs().mean().item() <= 1e-4
 
 	w_shift   = 2**(nbits - 1) - 1
+	w_shift_tensor = torch.tensor([[w_shift]], dtype=torch.float16, device=W.device)
 	w_scale_f = 2**(nbits - 1) - 1
+	w_scale_tensor = torch.tensor([[w_scale_f]], dtype=torch.float16, device=W.device)
 
 	W_uint = torch.randint(0, 2**nbits + (-1 if nbits==8 else 0), (N, K), device=device, dtype=torch.uint8).contiguous() 
 	W	  = ((W_uint.float() - w_shift) / w_scale_f).to(dtype).contiguous()
@@ -153,7 +155,7 @@ for b, K, N  in shapes:
 
 	#BitBlas
 	f_bitblas = None
-	if(nbits in [8, 4, 2, 1]):
+	if False and (nbits in [8, 4, 2, 1]):
 		bitblas_linear = BitBlassLinear(weight=W, w_shift=w_shift, w_scale=w_scale_f, nbits=nbits, group_size=-1, batch_size=b)
 		def f_bitblas(x, W):
 			return bitblas_linear.forward(x)
@@ -171,8 +173,8 @@ for b, K, N  in shapes:
 			return aoint4_linear.forward(x)
 
 	#GemLite
-	gemlite_fp16_fp16  = GemLiteLinearCUDA(nbits, group_size=1, in_features=K, out_features=N, input_dtype=DType.FP16, output_dtype=DType.FP16)
-	gemlite_int8_int32 = GemLiteLinearCUDA(nbits, group_size=1, in_features=K, out_features=N, input_dtype=DType.INT8, output_dtype=DType.INT32)
+	gemlite_fp16_fp16  = GemLiteLinearCUDA(nbits, group_size=K*N, in_features=K, out_features=N, input_dtype=DType.FP16, output_dtype=DType.FP16)
+	gemlite_int8_int32 = GemLiteLinearCUDA(nbits, group_size=K*N, in_features=K, out_features=N, input_dtype=DType.INT8, output_dtype=DType.INT32)
 	W_int32_packed     = gemlite_fp16_fp16.pack(W_uint, 1, 0).W_q
 	f_cuda             = gemlite_fp16_fp16.forward_raw
 	f_cuda_int         = gemlite_int8_int32.forward_raw
@@ -189,7 +191,7 @@ for b, K, N  in shapes:
 
 	################################################################################################
 	#Eval time
-	cuda_time	  = eval_time(f_cuda,     {'x':x,     'W_q':W_int32_packed, 'zeros':w_shift, 'scales':w_scale_f}) 
+	cuda_time	  = eval_time(f_cuda,     {'x':x,     'W_q':W_int32_packed, 'zeros':w_shift_tensor, 'scales':w_scale_tensor}) 
 	cuda_int_time = eval_time(f_cuda_int, {'x':x_int, 'W_q':W_int32_packed, 'zeros':w_shift, 'scales': 1}) 
 	
 	torch_time	  = eval_time(f_ref, {'x':x, 'W':W})
@@ -206,7 +208,7 @@ for b, K, N  in shapes:
 	
 	fp16 = f_ref(x, W).flatten()
 	#fp8  = f_fp8(x, W_fp8).flatten()
-	cuda	 = f_cuda(**{'x':x, 'W_q':W_int32_packed, 'zeros':w_shift, 'scales':w_scale_f}).to(dtype).flatten() 
+	cuda	 = f_cuda(**{'x':x, 'W_q':W_int32_packed, 'zeros':w_shift_tensor, 'scales':w_scale_tensor}).to(dtype).flatten() 
 	cuda_int = f_cuda_int(**{'x':x_int, 'W_q':W_int32_packed, 'zeros':w_shift, 'scales':1}).flatten().float()/(x_scale_f * w_scale_f) 
 
 	print('----------------------------------------------------------------------')
