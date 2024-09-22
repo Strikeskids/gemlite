@@ -67,17 +67,17 @@ __device__ __forceinline__ void gemv_A16fWniO16f_fp16acchalf2_int32pack_core_ker
 //**************************************************************
 //fp16 x n-bit as 32-bit packed, fp32 accumulation with float4
 __device__ __forceinline__ void gemv_A16fWniO16f_fp32accfloat4_int32pack_core_kernel(const half* __restrict__ x, const int32_t* __restrict__ W, half* y, 
-                                  const size_t x_rows, const size_t x_cols, const size_t W_rows, const size_t W_cols, 
-                                  const float w_zero, const float w_scale, 
+                                  const half* __restrict__ w_zero, const half* __restrict__ w_scale, 
+                                  const size_t x_rows, const size_t x_cols, const size_t W_rows, const size_t W_cols, const size_t group_size,
                                   const unsigned int unpack_mask, const size_t elements_per_sample, 
                                   const size_t* __restrict__ loc_shifts, const uint8_t* __restrict__ q_shifts)  
 {
 
   //Set warp params
   const size_t group_id  = threadIdx.x / threads_per_group;
-  const size_t group_col = blockIdx.x * cols_per_block + group_id;
+  const size_t group_col = blockIdx.x * cols_per_block + group_id; // the output element we are computing
   size_t warp_iters      = div_ceil(x_cols, threads_per_group); //x_cols / W_rows
-  const size_t group_lane_id = threadIdx.x % threads_per_group;
+  const size_t group_lane_id = threadIdx.x % threads_per_group; // thread within the particular output element
   if (group_col >= W_cols) {return;}
 
   //Shared memory
@@ -92,10 +92,9 @@ __device__ __forceinline__ void gemv_A16fWniO16f_fp32accfloat4_int32pack_core_ke
   __syncthreads();
 
   //Main loop: float4 acc                                         
-  float4 x_4, w_4;
+  float4 x_4, w_4, s_4, z_4;
   size_t k;
   float4 sum_float4 = __make_float4(0.f);
-  const float4 w_shift_float4 = __make_float4(-w_zero);
   const uint16_t W_idx_div = elements_per_sample * threads_per_group; //max val 1024
 
   #pragma unroll
@@ -106,30 +105,48 @@ __device__ __forceinline__ void gemv_A16fWniO16f_fp32accfloat4_int32pack_core_ke
     const size_t q_index = (W_idx / W_idx_div) * threads_per_group + W_idx % threads_per_group;
     const int32_t W_q    = __ldg(&W[q_index]);
 
+    // loading here requires groups of threads_per_group * elements_per_sample values
+
     #pragma unroll
     for (size_t j=0; j < elements_per_sample; j+=4){
+      // loading here requires groups of threads_per_group * 4 values
       k=j;
+      // TODO: this could go faster if we loaded 8 so that we do a 128-bit load from the warp
       x_4.x = static_cast<float>(x_shared[x_idx + loc_shifts[k]]);
       w_4.x = static_cast<float>((W_q >> q_shifts[k]) & unpack_mask);
+      z_4.x = static_cast<float>(-__ldg(&w_zero[(W_idx + loc_shifts[k]) / group_size]));
+      s_4.x = static_cast<float>(__ldg(&w_scale[(W_idx + loc_shifts[k]) / group_size]));
 
       k++;
       x_4.y = static_cast<float>(x_shared[x_idx + loc_shifts[k]]);
       w_4.y = static_cast<float>((W_q >> q_shifts[k]) & unpack_mask);
+      z_4.y = static_cast<float>(-__ldg(&w_zero[(W_idx + loc_shifts[k]) / group_size]));
+      s_4.y = static_cast<float>(__ldg(&w_scale[(W_idx + loc_shifts[k]) / group_size]));
+
 
       k++;
       x_4.z = static_cast<float>(x_shared[x_idx + loc_shifts[k]]);
       w_4.z = static_cast<float>((W_q >> q_shifts[k]) & unpack_mask);
+      z_4.z = static_cast<float>(-__ldg(&w_zero[(W_idx + loc_shifts[k]) / group_size]));
+      s_4.z = static_cast<float>(__ldg(&w_scale[(W_idx + loc_shifts[k]) / group_size]));
 
       k++;
       x_4.w = static_cast<float>(x_shared[x_idx + loc_shifts[k]]);
       w_4.w = static_cast<float>((W_q >> q_shifts[k]) & unpack_mask);
+      z_4.w = static_cast<float>(-__ldg(&w_zero[(W_idx + loc_shifts[k]) / group_size]));
+      s_4.w = static_cast<float>(__ldg(&w_scale[(W_idx + loc_shifts[k]) / group_size]));
 
-      sum_float4 = __fmaf4(x_4, __fadd4(w_4, w_shift_float4), sum_float4); 
+      // if (i == 0 && j == 0 & threadIdx.x < 4 && group_col == 0) {
+      //   printf("W_idx: %lu (g=%lu) => %f %f; %f %f\n", W_idx + loc_shifts[k], group_size, z_4.x, s_4.x, z_4.y, s_4.y);
+      // }
+
+      const float4 w_rescaled = __fmul4(__fadd4(w_4, z_4), s_4);
+      sum_float4 = __fmaf4(x_4, w_rescaled, sum_float4); 
     }
   }
 
   //fp32 warp reduction
-  float sum = warpReduceSum<float>(__reduce_sum(sum_float4) / (w_scale), threads_per_group);
+  float sum = warpReduceSum<float>(__reduce_sum(sum_float4), threads_per_group);
   if (group_lane_id == 0) {y[group_col] = __float2half(sum);}
 }
 
@@ -194,9 +211,9 @@ __device__ __forceinline__ void gemv_A16fWniO16f_fp32accfloat_int32pack_core_ker
 //******************************************************************************************************************************************************/
 
 //fp16 x 8-bit as 32-bit packed, fp32 accumulation
-__global__ void gemv_A16fW8iO16f_kernel(const half* __restrict__ x, const int32_t* __restrict__ W, half* y, 
-                                        const size_t x_rows, const size_t x_cols, const size_t W_rows, const size_t W_cols, 
-                                        const float w_zero, const float w_scale)  
+__global__ void gemv_A16fW8iO16f_kernel(const half *__restrict__ x, const int32_t *__restrict__ W, half *y,
+                                        const half *__restrict__ w_zero, const half *__restrict__ w_scale,
+                                        const size_t x_rows, const size_t x_cols, const size_t W_rows, const size_t W_cols, const size_t group_size)
 {
   //Extra params
   const size_t W_nbits = 8;
@@ -207,14 +224,14 @@ __global__ void gemv_A16fW8iO16f_kernel(const half* __restrict__ x, const int32_
   const size_t loc_shifts[elements_per_sample] = {0, threads_per_group , threads_per_group*2, threads_per_group*3};
   const uint8_t q_shifts[elements_per_sample]  = {24, 16, 8, 0}; //32 - W_nbits*i
 
-  gemv_A16fWniO16f_fp32accfloat4_int32pack_core_kernel(x, W, y, x_rows, W_rows, x_cols, W_cols, w_zero, w_scale, unpack_mask, elements_per_sample, loc_shifts, q_shifts);
+  gemv_A16fWniO16f_fp32accfloat4_int32pack_core_kernel(x, W, y, w_zero, w_scale, x_rows, W_rows, x_cols, W_cols, group_size, unpack_mask, elements_per_sample, loc_shifts, q_shifts);
 }
 
 
 //fp16 x 4-bit as 32-bit packed, fp32 accumulation
-__global__ void gemv_A16fW4iO16f_kernel(const half* __restrict__ x, const int32_t* __restrict__ W, half* y, 
-                                        const size_t x_rows, const size_t x_cols, const size_t W_rows, const size_t W_cols, 
-                                        const float w_zero, const float w_scale)  
+__global__ void gemv_A16fW4iO16f_kernel(const half *__restrict__ x, const int32_t *__restrict__ W, half *y,
+                                        const half *__restrict__ w_zero, const half *__restrict__ w_scale,
+                                        const size_t x_rows, const size_t x_cols, const size_t W_rows, const size_t W_cols, const size_t group_size)
 {
   //Extra params
   const size_t W_nbits = 4;
@@ -226,7 +243,7 @@ __global__ void gemv_A16fW4iO16f_kernel(const half* __restrict__ x, const int32_
                                                   threads_per_group*4,  threads_per_group*5, threads_per_group*6, threads_per_group*7};
   const uint8_t q_shifts[elements_per_sample]   = {28, 24, 20, 16, 12, 8, 4, 0}; //32 - W_nbits*i
 
-  gemv_A16fWniO16f_fp32accfloat4_int32pack_core_kernel(x, W, y, x_rows, x_cols, W_rows, W_cols, w_zero, w_scale, unpack_mask, elements_per_sample, loc_shifts, q_shifts);
+  gemv_A16fWniO16f_fp32accfloat4_int32pack_core_kernel(x, W, y, w_zero, w_scale, x_rows, W_rows, x_cols, W_cols, group_size, unpack_mask, elements_per_sample, loc_shifts, q_shifts);
 }
 
 // //fp16 x 3-bit as 32-bit packed, fp32 accumulation
@@ -251,9 +268,9 @@ __global__ void gemv_A16fW4iO16f_kernel(const half* __restrict__ x, const int32_
 
 
 //fp16 x 2-bit as 32-bit packed, fp32 accumulation
-__global__ void gemv_A16fW2iO16f_kernel(const half* __restrict__ x, const int32_t* __restrict__ W, half* y, 
-                                        const size_t x_rows, const size_t x_cols, const size_t W_rows, const size_t W_cols, 
-                                        const float w_zero, const float w_scale) 
+__global__ void gemv_A16fW2iO16f_kernel(const half *__restrict__ x, const int32_t *__restrict__ W, half *y,
+                                        const half *__restrict__ w_zero, const half *__restrict__ w_scale,
+                                        const size_t x_rows, const size_t x_cols, const size_t W_rows, const size_t W_cols, const size_t group_size)
 {
   //Extra params
   const size_t W_nbits = 2;
@@ -268,11 +285,10 @@ __global__ void gemv_A16fW2iO16f_kernel(const half* __restrict__ x, const int32_
 
   const uint8_t q_shifts[elements_per_sample] = {30, 28, 26, 24, 22, 20, 18, 16, 14, 12, 10, 8, 6, 4, 2, 0}; 
 
-  gemv_A16fWniO16f_fp32accfloat4_int32pack_core_kernel(x, W, y, x_rows, x_cols, W_rows, W_cols, w_zero, w_scale, unpack_mask, elements_per_sample, loc_shifts, q_shifts);
+  gemv_A16fWniO16f_fp32accfloat4_int32pack_core_kernel(x, W, y, w_zero, w_scale, x_rows, W_rows, x_cols, W_cols, group_size, unpack_mask, elements_per_sample, loc_shifts, q_shifts);
 }
 
-
-torch::Tensor gemv_A16fWniO16f(torch::Tensor x, torch::Tensor W, const float w_zero, const float w_scale, size_t W_nbits)
+torch::Tensor gemv_A16fWniO16f(torch::Tensor x, torch::Tensor W, torch::Tensor w_zero, torch::Tensor w_scale, size_t W_nbits)
 {
     //TORCH_CHECK(W_nbits == 8 | W_nbits == 4 | W_nbits == 2, "Unsupported W_nbits.");
     TORCH_CHECK((warp_size*warps_per_block) <= 1024, "Invalid warp_size / warps_per_block.");
@@ -280,16 +296,21 @@ torch::Tensor gemv_A16fWniO16f(torch::Tensor x, torch::Tensor W, const float w_z
     CHECK_INPUT(x);
     CHECK_INPUT(W);
 
+    const size_t packing_bits = 32; 
     size_t x_rows = x.size(0);
     size_t x_cols = x.size(1);
     size_t W_rows = W.size(1);
     size_t W_cols = W.size(0); //matmul(x, W.T) 
-    
-    const size_t packing_bits = 32; 
     W_rows *= (packing_bits / W_nbits);
+
+    size_t num_groups = w_scale.size(0);
+    size_t group_size = W_rows * W_cols / num_groups;
+    
     TORCH_CHECK(x_rows == 1, "Only batch-size=1 is supported.");
     TORCH_CHECK(x_cols == W_rows, "Vector cols / Matrix rows mismatch.");
     TORCH_CHECK(W_rows >= threads_per_block, "Invalid W_rows >= threads_per_block.")
+    TORCH_CHECK(w_scale.size(0) == w_zero.size(0), "normalization dims must match");
+    TORCH_CHECK(W_rows * W_cols % num_groups == 0, "group size must cleanly divide numel");
     
     auto dev   = x.device();
     auto dtype = c10::ScalarType::Half;
@@ -300,18 +321,18 @@ torch::Tensor gemv_A16fWniO16f(torch::Tensor x, torch::Tensor W, const float w_z
     dim3 grid_size(cdiv(W_cols, cols_per_block), block_size.y);
   
     //Inputs / outputs ptr  
-    const half* x_ptr    = reinterpret_cast<const half*>(x.const_data_ptr<at::Half>());
-    const int32_t* W_ptr = reinterpret_cast<const int32_t*>(W.const_data_ptr<int32_t>());
-    half* y_ptr          = reinterpret_cast<half*>(y.data_ptr<at::Half>());
+    const half* x_ptr       = reinterpret_cast<const half*>(x.const_data_ptr<at::Half>());
+    const half* w_zero_ptr  = reinterpret_cast<const half*>(w_zero.const_data_ptr<at::Half>());
+    const half* w_scale_ptr = reinterpret_cast<const half*>(w_scale.const_data_ptr<at::Half>());
+    const int32_t* W_ptr    = reinterpret_cast<const int32_t*>(W.const_data_ptr<int32_t>());
+    half* y_ptr             = reinterpret_cast<half*>(y.data_ptr<at::Half>());
 
     //Shared memory size
     size_t shared_mem_size = x_cols * sizeof(half); //W_rows , x_cols
 
     switch (W_nbits){
-      case 8: gemv_A16fW8iO16f_kernel<<<grid_size, block_size, shared_mem_size>>>(x_ptr, W_ptr, y_ptr, x_rows, x_cols, W_rows, W_cols, w_zero, w_scale); break; 
-      case 4: gemv_A16fW4iO16f_kernel<<<grid_size, block_size, shared_mem_size>>>(x_ptr, W_ptr, y_ptr, x_rows, x_cols, W_rows, W_cols, w_zero, w_scale); break; 
-      //case 3: gemv_A16fW3iO16f_kernel<<<grid_size, block_size, shared_mem_size>>>(x_ptr, W_ptr, y_ptr, x_rows, x_cols, W_rows, W_cols, w_zero, w_scale); break; 
-      case 2: gemv_A16fW2iO16f_kernel<<<grid_size, block_size, shared_mem_size>>>(x_ptr, W_ptr, y_ptr, x_rows, x_cols, W_rows, W_cols, w_zero, w_scale); break; 
+      // TODO: these kernels do not yet exist
+      case 4: gemv_A16fW4iO16f_kernel<<<grid_size, block_size, shared_mem_size>>>(x_ptr, W_ptr, y_ptr, w_zero_ptr, w_scale_ptr, x_rows, x_cols, W_rows, W_cols, group_size); break; 
     }
 
     C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -319,12 +340,11 @@ torch::Tensor gemv_A16fWniO16f(torch::Tensor x, torch::Tensor W, const float w_z
     return y;
 }
 
-
-torch::Tensor gemv_A16fW8iO16f(torch::Tensor x, torch::Tensor W, const float w_zero, const float w_scale){
+torch::Tensor gemv_A16fW8iO16f(torch::Tensor x, torch::Tensor W, torch::Tensor w_zero, torch::Tensor w_scale){
   return gemv_A16fWniO16f(x, W, w_zero, w_scale, 8);
 }
 
-torch::Tensor gemv_A16fW4iO16f(torch::Tensor x, torch::Tensor W, const float w_zero, const float w_scale){
+torch::Tensor gemv_A16fW4iO16f(torch::Tensor x, torch::Tensor W, torch::Tensor w_zero, torch::Tensor w_scale){
   return gemv_A16fWniO16f(x, W, w_zero, w_scale, 4);
 }
 
@@ -332,6 +352,6 @@ torch::Tensor gemv_A16fW4iO16f(torch::Tensor x, torch::Tensor W, const float w_z
 //   return gemv_A16fWniO16f(x, W, w_zero, w_scale, 3);
 // }
 
-torch::Tensor gemv_A16fW2iO16f(torch::Tensor x, torch::Tensor W, const float w_zero, const float w_scale){
+torch::Tensor gemv_A16fW2iO16f(torch::Tensor x, torch::Tensor W, torch::Tensor w_zero, torch::Tensor w_scale){
   return gemv_A16fWniO16f(x, W, w_zero, w_scale, 2);
 }

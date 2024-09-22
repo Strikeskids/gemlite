@@ -15,7 +15,7 @@ gemlite_linear = GemLiteLinearCUDA(W_nbits, group_size=in_features, in_features=
 W_q    = torch.randint(0, 2**W_nbits, (in_features, out_features), dtype=torch.uint8, device=device)
 scales = torch.randn((1, in_features), dtype=gemlite_linear.compute_dtype, device=device) / 100.
 zeros  = 7.
-gemlite_linear.pack(W_q.T, scales, zeros, None);
+gemlite_linear.pack(W_q.T, scales, zeros, None)
 
 # Equivalent dequantized matrix
 _scales = scales
@@ -35,12 +35,12 @@ print("FP16 x Wn -> FP16 | ", "Mean Absolute Error:", (y_q - y_ref).abs().mean()
 
 ############################################################################################
 #Int8 x Wn -> Int32
-gemlite_linear = GemLiteLinearCUDA(W_nbits, group_size=1, in_features=in_features, out_features=out_features, input_dtype=DType.INT8, output_dtype=DType.INT32)
+gemlite_linear = GemLiteLinearCUDA(W_nbits, group_size=in_features * out_features, in_features=in_features, out_features=out_features, input_dtype=DType.INT8, output_dtype=DType.INT32)
 
 #Pack
 W_q    = torch.randint(0, 2**W_nbits, (in_features, out_features), dtype=torch.uint8, device=device)
 shift  = 2**W_nbits // 2 - 1 #symmetric Int4
-gemlite_linear.pack(W_q.T, None, shift, None);
+gemlite_linear.pack(W_q.T, None, shift, None)
 
 # Equivalent dequantized matrix
 W = ((W_q.float() - shift)).to(torch.float16)

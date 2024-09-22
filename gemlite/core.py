@@ -58,7 +58,7 @@ class GemLiteLinearCUDA(torch.nn.Module):
         self.out_features = out_features
         self.orig_shape = (out_features, in_features)
         self.W_nbits = W_nbits
-        self.group_size = group_size if group_size != -1 else in_features
+        self.group_size = group_size if group_size is not None else in_features
         self.input_dtype = input_dtype
         self.output_dtype = output_dtype
         self.signature = (in_features, out_features, W_nbits, group_size)
@@ -67,16 +67,16 @@ class GemLiteLinearCUDA(torch.nn.Module):
 
         if input_dtype == DType.FP16 and output_dtype == DType.FP16:
             self.kernel_fct = GEMLITE_GEMV_FP16_INPUT_FP16_OUTPUT[self.W_nbits]
-            if group_size == 1:
+            if self.in_features * self.out_features % group_size == 0:
+                self.zero_is_tensor = True
+                self.has_scales = True
                 self.forward_raw = lambda x, W_q, zeros, scales: self.kernel_fct(x, W_q, zeros, scales)
-            if group_size == in_features:
-                self.forward_raw = lambda x, W_q, zeros, scales: self.kernel_fct(x * scales, W_q, zeros, 1)
-            if group_size == out_features:
-                self.forward_raw = lambda x, W_q, zeros, scales: self.kernel_fct(x, W_q, zeros, 1) * scales
 
         if input_dtype == DType.INT8 and output_dtype == DType.INT32:
             self.kernel_fct = GEMLITE_GEMV_INT8_INPUT_INT32_OUTPUT[self.W_nbits]
-            if group_size in [1]:
+            if group_size == self.in_features * self.out_features:
+                self.zero_is_tensor = False
+                self.has_scales = False
                 self.forward_raw = lambda x, W_q, zeros, scales: self.kernel_fct(x, W_q, zeros)
 
         if self.forward_raw is None:
@@ -93,7 +93,7 @@ class GemLiteLinearCUDA(torch.nn.Module):
         self.acc_dtype = None
 
     # Universal bitpacking with int32
-    def pack(self, W_q, scales=1, zeros=0, bias=None):
+    def pack(self, W_q, scales, zeros, bias=None):
         tile_size = self.threads_per_group
 
         step = 32 // self.W_nbits
@@ -113,11 +113,23 @@ class GemLiteLinearCUDA(torch.nn.Module):
             W_q_packed |= W_q[i::step, :] << shift
 
         self.W_q = W_q_packed.reshape(W_shape[0], W_shape[1] // step)
+        assert self.has_scales == (scales is not None), "existence of scales did not match expectation"
+
         if scales is not None:
-            self.scales = scales if isinstance(scales, torch.Tensor) else 1 / scales
+            if self.zero_is_tensor:
+                self.scales = scales if isinstance(scales, torch.Tensor) else torch.tensor([[scales]], dtype=torch.float16, device=W_q.device)
+            else:
+                assert not isinstance(scales, torch.Tensor)
+                self.scales = scales
         else:
-            self.scales = None
-        self.zeros = zeros
+            self.scales = None # supports the int kernel
+
+        if self.zero_is_tensor:
+            self.zeros = zeros if isinstance(zeros, torch.Tensor) else torch.tensor([[zeros]], dtype=torch.float16, device=W_q.device)
+        else:
+            assert not isinstance(zeros, torch.Tensor)
+            self.zeros = zeros
+
         self.bias = None if (bias is None) else torch.nn.Parameter(bias.to(device=self.W_q.device, dtype=self.compute_dtype))
         self.device = self.W_q.device
 

@@ -35,7 +35,11 @@ inline  unsigned int cdiv(unsigned int a, unsigned int b) { return (a + b - 1) /
 
 #define threads_per_block (warp_size * warps_per_block)  // <1024
 #define cols_per_block (cols_per_warp * warps_per_block) // default 32 cols per block
-#define threads_per_group (warp_size / cols_per_warp)  // default 32 threads per group
+
+// this is incorrectly called _per_group here, when it actually means per
+// element of the output. group is also used to refer to elements of the weight
+// matrix that are quantized together
+#define threads_per_group (warp_size / cols_per_warp)  // default 32 threads per element of the output
 
 //*********************************************************************************************************/
 // Arithmetics
