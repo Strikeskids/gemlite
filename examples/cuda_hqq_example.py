@@ -12,9 +12,9 @@ def check_valid(x, W, quant_linear, tol=3e-3):
 from hqq.core.quantize import HQQLinear, BaseQuantizeConfig
 
 in_features, out_features = 4096*4, 4096*2
-# W_nbits, group_size = 8, in_features 
-W_nbits, group_size = 4, 128 
-W_nbits, group_size = 2, 128
+W_nbits, group_size = 8, in_features 
+# W_nbits, group_size = 4, 128 
+# W_nbits, group_size = 2, 128
 
 linear       = torch.nn.Linear(in_features=in_features, out_features=out_features, bias=False, device='cpu')
 quant_config = BaseQuantizeConfig(nbits=W_nbits, group_size=group_size, quant_zero=False, quant_scale=False, axis=1)

@@ -14,6 +14,7 @@ from hqq.backends.torchao import patch_hqq_to_aoint4
 
 from triton.testing import do_bench
 def eval_time(fct, params): 
+	if fct is None: return None
 	return do_bench(lambda: fct(**params)) 
 
 device = 'cuda:0'
@@ -138,7 +139,7 @@ for b, K, N  in shapes:
 	w_shift   = 2**(nbits - 1) - 1
 	w_shift_tensor = torch.tensor([[w_shift]], dtype=torch.float16, device=W.device)
 	w_scale_f = 2**(nbits - 1) - 1
-	w_scale_tensor = torch.tensor([[w_scale_f]], dtype=torch.float16, device=W.device)
+	w_scale_tensor = torch.tensor([[1/w_scale_f]], dtype=torch.float16, device=W.device)
 
 	W_uint = torch.randint(0, 2**nbits + (-1 if nbits==8 else 0), (N, K), device=device, dtype=torch.uint8).contiguous() 
 	W	  = ((W_uint.float() - w_shift) / w_scale_f).to(dtype).contiguous()

@@ -103,7 +103,10 @@ __device__ __forceinline__ void gemv_A16fWniO16f_fp32accfloat4_int32pack_core_ke
     const size_t W_idx = x_idx + group_col * W_rows;
 
     const size_t q_index = (W_idx / W_idx_div) * threads_per_group + W_idx % threads_per_group;
-    const int32_t W_q    = __ldg(&W[q_index]);
+    const int32_t W_q    = __ldg(&W[q_index]); // require: group_size % elements_per_sample == 0
+    const half scale     = __ldg(&w_scale[W_idx / group_size]);
+    const half zero      = __ldg(&w_zero[W_idx / group_size]);
+
 
     // loading here requires groups of threads_per_group * elements_per_sample values
 
@@ -114,31 +117,34 @@ __device__ __forceinline__ void gemv_A16fWniO16f_fp32accfloat4_int32pack_core_ke
       // TODO: this could go faster if we loaded 8 so that we do a 128-bit load from the warp
       x_4.x = static_cast<float>(x_shared[x_idx + loc_shifts[k]]);
       w_4.x = static_cast<float>((W_q >> q_shifts[k]) & unpack_mask);
-      z_4.x = static_cast<float>(-__ldg(&w_zero[(W_idx + loc_shifts[k]) / group_size]));
-      s_4.x = static_cast<float>(__ldg(&w_scale[(W_idx + loc_shifts[k]) / group_size]));
+      // z_4.x = static_cast<float>(-__ldg(&w_zero[(W_idx + loc_shifts[k]) / group_size]));
+      // s_4.x = static_cast<float>(__ldg(&w_scale[(W_idx + loc_shifts[k]) / group_size]));
+
+      // if (i == 0 && k == 0 & threadIdx.x < 4 && group_col == 0) {
+      //   printf("W_idx: %lu (g=%lu) => %f %f\n", W_idx + loc_shifts[k], group_size, z_4.x, s_4.x);
+      // }
 
       k++;
       x_4.y = static_cast<float>(x_shared[x_idx + loc_shifts[k]]);
       w_4.y = static_cast<float>((W_q >> q_shifts[k]) & unpack_mask);
-      z_4.y = static_cast<float>(-__ldg(&w_zero[(W_idx + loc_shifts[k]) / group_size]));
-      s_4.y = static_cast<float>(__ldg(&w_scale[(W_idx + loc_shifts[k]) / group_size]));
+      // z_4.y = static_cast<float>(-__ldg(&w_zero[(W_idx + loc_shifts[k]) / group_size]));
+      // s_4.y = static_cast<float>(__ldg(&w_scale[(W_idx + loc_shifts[k]) / group_size]));
 
 
       k++;
       x_4.z = static_cast<float>(x_shared[x_idx + loc_shifts[k]]);
       w_4.z = static_cast<float>((W_q >> q_shifts[k]) & unpack_mask);
-      z_4.z = static_cast<float>(-__ldg(&w_zero[(W_idx + loc_shifts[k]) / group_size]));
-      s_4.z = static_cast<float>(__ldg(&w_scale[(W_idx + loc_shifts[k]) / group_size]));
+      // z_4.z = static_cast<float>(-__ldg(&w_zero[(W_idx + loc_shifts[k]) / group_size]));
+      // s_4.z = static_cast<float>(__ldg(&w_scale[(W_idx + loc_shifts[k]) / group_size]));
 
       k++;
       x_4.w = static_cast<float>(x_shared[x_idx + loc_shifts[k]]);
       w_4.w = static_cast<float>((W_q >> q_shifts[k]) & unpack_mask);
-      z_4.w = static_cast<float>(-__ldg(&w_zero[(W_idx + loc_shifts[k]) / group_size]));
-      s_4.w = static_cast<float>(__ldg(&w_scale[(W_idx + loc_shifts[k]) / group_size]));
+      // z_4.w = static_cast<float>(-__ldg(&w_zero[(W_idx + loc_shifts[k]) / group_size]));
+      // s_4.w = static_cast<float>(__ldg(&w_scale[(W_idx + loc_shifts[k]) / group_size]));
 
-      // if (i == 0 && j == 0 & threadIdx.x < 4 && group_col == 0) {
-      //   printf("W_idx: %lu (g=%lu) => %f %f; %f %f\n", W_idx + loc_shifts[k], group_size, z_4.x, s_4.x, z_4.y, s_4.y);
-      // }
+      z_4 = __make_float4(-zero);
+      s_4 = __make_float4(scale);
 
       const float4 w_rescaled = __fmul4(__fadd4(w_4, z_4), s_4);
       sum_float4 = __fmaf4(x_4, w_rescaled, sum_float4); 
@@ -332,7 +338,9 @@ torch::Tensor gemv_A16fWniO16f(torch::Tensor x, torch::Tensor W, torch::Tensor w
 
     switch (W_nbits){
       // TODO: these kernels do not yet exist
+      case 8: gemv_A16fW8iO16f_kernel<<<grid_size, block_size, shared_mem_size>>>(x_ptr, W_ptr, y_ptr, w_zero_ptr, w_scale_ptr, x_rows, x_cols, W_rows, W_cols, group_size); break; 
       case 4: gemv_A16fW4iO16f_kernel<<<grid_size, block_size, shared_mem_size>>>(x_ptr, W_ptr, y_ptr, w_zero_ptr, w_scale_ptr, x_rows, x_cols, W_rows, W_cols, group_size); break; 
+      case 2: gemv_A16fW2iO16f_kernel<<<grid_size, block_size, shared_mem_size>>>(x_ptr, W_ptr, y_ptr, w_zero_ptr, w_scale_ptr, x_rows, x_cols, W_rows, W_cols, group_size); break; 
     }
 
     C10_CUDA_KERNEL_LAUNCH_CHECK();
