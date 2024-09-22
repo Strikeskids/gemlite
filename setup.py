@@ -2,7 +2,8 @@ from setuptools import setup, find_packages
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
 extra_args = [
-    "-O3",
+    # "-O3",
+    "-lineinfo",
     "-use_fast_math",
     "-prec-div=false",
     "-prec-sqrt=false",
@@ -12,8 +13,9 @@ extra_args = [
     "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
     "--expt-relaxed-constexpr",
     "--expt-extended-lambda",
-    # "-gencode=arch=compute_86,code=sum_86" #3090: compute_86/sum_86
-    # "-gencode=arch=compute_89,code=sum_89",#4090: compute_89/sum_89
+    # "-gencode=arch=compute_86,code=sm_86" #3090: compute_86/sm_86
+    # "-gencode=arch=compute_89,code=sm_89",#4090: compute_89/sm_89
+    "-gencode=arch=compute_90,code=sm_90",
 ]
 
 setup(
@@ -31,7 +33,10 @@ setup(
             "gemlite/cuda_kernels/helper.cu"
             ],
         extra_compile_args={
-                "cxx": ["-O3", "-std=c++17"],
+                "cxx": [
+                    # "-O3",
+                    "-std=c++17",
+                ],
                 "nvcc": extra_args,
             }
         ),
@@ -42,7 +47,7 @@ setup(
     },
     include_package_data=True,
     cmdclass={'build_ext': BuildExtension},
-    install_requires=["numpy", "ninja", "triton>=3.0.0"], #3.0.0+dedb7bdf33
+    install_requires=["numpy", "ninja", "triton>=3.0.0", "pybind11"], #3.0.0+dedb7bdf33
 )
 
 # python3 setup.py install
